@@ -87,23 +87,51 @@ async function cloudLoad(){
  localStorage.removeItem(STORAGE);
  cloudLastError='';
 }
+
 function cloudLoginScreen(message=''){
  const app=document.getElementById('content');if(!app)return;
- app.innerHTML='<div class="whiteCard" style="max-width:600px;margin:26px auto"><h1 style="color:#6126ad">🔐 Вход в Читательский навигатор</h1><p>Войдите, чтобы результаты восьми маршрутов сохранялись в облаке и открывались на других устройствах.</p><p class="note">Для учебного тестирования используйте псевдонимы. Пробные ответы, сохранённые ранее в браузере, не переносятся в базу.</p><form id="cloudLoginForm" class="profileForm"><label><b>Email</b><input type="email" id="cloudEmail" autocomplete="email" required placeholder="Адрес электронной почты"></label><label><b>Пароль (не менее 6 символов)</b><input type="password" id="cloudPassword" autocomplete="current-password" minlength="6" required></label><div class="controls"><button class="btn" type="submit">Войти</button><button class="btn teal" type="button" id="cloudRegister">Создать аккаунт</button></div><p id="cloudMessage" role="status" style="color:#a02c4b"></p></form></div>';
- if(message)document.getElementById('cloudMessage').textContent=message;
- document.getElementById('cloudLoginForm').onsubmit=e=>{e.preventDefault();cloudAuth('login')};
- document.getElementById('cloudRegister').onclick=()=>cloudAuth('signup');
+ const teacher=location.search.includes('teacher=1');
+ if(teacher){
+  app.innerHTML='<div class="whiteCard" style="max-width:600px;margin:26px auto"><h1 style="color:#6126ad">👩‍🏫 Вход учителя</h1><p>Для доступа к ведомости класса нужен защищённый аккаунт учителя.</p><form id="cloudLoginForm" class="profileForm"><label><b>Email учителя</b><input type="email" id="cloudEmail" autocomplete="email" required></label><label><b>Пароль</b><input type="password" id="cloudPassword" autocomplete="current-password" minlength="6" required></label><div class="controls"><button class="btn" type="submit">Войти</button><button class="btn outline" type="button" id="cloudRegister">Регистрация учителя</button></div><p id="cloudMessage" role="status" style="color:#a02c4b"></p></form><p class="smallFoot"><a href="./">← К входу ученика</a></p></div>';
+  if(message)document.getElementById('cloudMessage').textContent=message;
+  document.getElementById('cloudLoginForm').onsubmit=e=>{e.preventDefault();cloudAuth('login')};
+  document.getElementById('cloudRegister').onclick=()=>cloudAuth('signup');
+ }else{
+  app.innerHTML='<div class="whiteCard" style="max-width:600px;margin:26px auto"><h1 style="color:#6126ad">📚 Добро пожаловать!</h1><p>В «Читательском навигаторе» достаточно указать имя и класс — без почты и пароля.</p><p class="note">Работа сохраняется в облаке и открывается повторно в том же браузере. Если удалить данные браузера или сменить устройство, восстановить её только по имени и классу нельзя. Лучше использовать псевдоним ученика.</p><form id="studentStartForm" class="profileForm"><label><b>Имя ученика (или псевдоним)</b><input id="studentStartName" required maxlength="120" minlength="2" placeholder="Например, Ученик 01"></label><label><b>Класс</b><input id="studentStartClass" required maxlength="24" placeholder="Например, 8 А"></label><button class="btn teal" type="submit">🚀 Начать обучение</button><p id="cloudMessage" role="status" style="color:#a02c4b"></p></form><p class="smallFoot"><a href="?teacher=1">Вход учителя</a></p></div>';
+  if(message)document.getElementById('cloudMessage').textContent=message;
+  document.getElementById('studentStartForm').onsubmit=e=>{e.preventDefault();cloudAuth('anonymous')};
+ }
  cloudStatus();
 }
 async function cloudAuth(mode){
- const email=document.getElementById('cloudEmail').value.trim(),password=document.getElementById('cloudPassword').value;
  const out=document.getElementById('cloudMessage');out.textContent='Подключение...';
  try{
-  const data=await sbFetch(mode==='signup'?'/auth/v1/signup':'/auth/v1/token?grant_type=password',
+  let data;
+  if(mode==='anonymous'){
+   const fullName=document.getElementById('studentStartName').value.trim(),klass=document.getElementById('studentStartClass').value.trim();
+   if(fullName.length<2||!klass){out.textContent='Укажите имя и класс.';return}
+   // Supabase Auth anonymous signup grants unique auth.uid() while requiring no user credentials.
+   data=await sbFetch('/auth/v1/signup',{method:'POST',body:JSON.stringify({})});
+   if(!data.access_token){out.textContent='Анонимный вход пока выключен в Supabase. Включите Authentication → Sign In / Providers → Anonymous Sign-Ins.';return}
+   setCloudSession(data);
+   cloudLoading=true;
+   // Fresh student identity. Do not import browser's old sample answers.
+   state={answers:{},marks:{},checked:{},profile:{name:fullName,klass},seen:{}};
+   await cloudPushFirst();
+   cloudLoading=false;go('home');cloudStatus();return;
+  }
+  const email=document.getElementById('cloudEmail').value.trim(),password=document.getElementById('cloudPassword').value;
+  data=await sbFetch(mode==='signup'?'/auth/v1/signup':'/auth/v1/token?grant_type=password',
     {method:'POST',body:JSON.stringify({email,password})});
   if(!data.access_token){out.textContent='Проверьте почту и подтвердите регистрацию, затем нажмите «Войти».';return}
   setCloudSession(data);cloudLoading=true;await cloudLoad();cloudLoading=false;go('home');cloudStatus();
  }catch(e){out.textContent='Не удалось войти: '+e.message;cloudLoading=false;cloudStatus()}
+}
+async function cloudPushFirst(){
+ const user=cloudSession.user.id;
+ const profile={user_id:user,full_name:state.profile.name,class_name:state.profile.klass,updated_at:new Date().toISOString()};
+ await sbFetch('/rest/v1/student_profiles?on_conflict=user_id',{method:'POST',headers:{'Prefer':'resolution=merge-duplicates,return=minimal'},body:JSON.stringify(profile)});
+ cloudTeacher=false;cloudLastError='';localStorage.removeItem(STORAGE);
 }
 async function cloudInit(){
  cloudLoading=true;cloudStatus();
@@ -121,6 +149,7 @@ async function cloudInit(){
  }catch(e){setCloudSession(null);cloudLoading=false;cloudLoginScreen('Войдите снова: '+e.message)}
 }
 function cloudLogout(){
+ if(cloudSession?.user?.is_anonymous&&!confirm('Если вы выйдете, результаты этого ученика могут стать недоступны на этом устройстве. Сменить ученика?'))return;
  clearTimeout(cloudTimer);cloudPending=false;cloudBusy=false;
  setCloudSession(null);cloudTeacher=false;cloudLastError='';
  state={answers:{},marks:{},checked:{},profile:{name:'',klass:'8'},seen:{}};
