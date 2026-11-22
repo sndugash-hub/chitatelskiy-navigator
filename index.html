@@ -133,8 +133,37 @@ async function cloudPushFirst(){
  await sbFetch('/rest/v1/student_profiles?on_conflict=user_id',{method:'POST',headers:{'Prefer':'resolution=merge-duplicates,return=minimal'},body:JSON.stringify(profile)});
  cloudTeacher=false;cloudLastError='';localStorage.removeItem(STORAGE);
 }
+
+function cloudPasswordRecovery(){
+ const hash=new URLSearchParams(location.hash.replace(/^#/,''));
+ if(hash.get('type')!=='recovery')return false;
+ const token=hash.get('access_token');
+ // Remove tokens from visible address/history as soon as possible.
+ history.replaceState(null,'',location.pathname+'?teacher=1');
+ const app=document.getElementById('content');
+ cloudLoading=false;
+ if(!token){cloudLoginScreen('Ссылка восстановления недействительна. Запросите новую.');return true}
+ app.innerHTML='<div class="whiteCard" style="max-width:600px;margin:26px auto"><h1 style="color:#6126ad">🔐 Новый пароль учителя</h1><p>Введите новый пароль для учётной записи учителя.</p><form id="recoverPasswordForm" class="profileForm"><label><b>Новый пароль</b><input type="password" id="newTeacherPassword" minlength="10" required autocomplete="new-password" placeholder="Не менее 10 символов"></label><label><b>Повторите пароль</b><input type="password" id="repeatTeacherPassword" minlength="10" required autocomplete="new-password"></label><button type="submit" class="btn">Сохранить новый пароль</button><p id="recoverMessage" role="status"></p></form></div>';
+ document.getElementById('recoverPasswordForm').onsubmit=async(e)=>{
+  e.preventDefault();
+  const pass=document.getElementById('newTeacherPassword').value;
+  const repeat=document.getElementById('repeatTeacherPassword').value;
+  const message=document.getElementById('recoverMessage');
+  if(pass!==repeat){message.textContent='Пароли не совпадают.';return}
+  message.textContent='Сохраняю пароль...';
+  try{
+   // User update endpoint is authenticated by one-time recovery access token.
+   await sbFetch('/auth/v1/user',{method:'PUT',headers:{Authorization:'Bearer '+token},body:JSON.stringify({password:pass})});
+   // Do not retain recovery credentials; require a normal teacher login.
+   cloudLoginScreen('Пароль изменён. Войдите с новым паролем.');
+  }catch(err){message.textContent='Не удалось изменить пароль: '+err.message+'. Возможно, ссылка истекла.'}
+ };
+ return true;
+}
+
 async function cloudInit(){
  cloudLoading=true;cloudStatus();
+ if(cloudPasswordRecovery())return;
  // The teacher page must be reachable even when an anonymous student session exists.
  // The teacher should use an incognito window so the student's credentials remain untouched.
  if(new URLSearchParams(location.search).get('teacher')==='1' && (!cloudSessionCache || cloudSessionCache.user?.is_anonymous)){
